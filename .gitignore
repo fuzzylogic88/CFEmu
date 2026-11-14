@@ -1,0 +1,7 @@
+*.bin
+/.vs
+/CFEmu/CFEmu/bin
+/CFEmu/CFEmu/obj
+/CFEmu/.vs/CFEmu.slnx/FileContentIndex
+/CFEmu/.vs/CFEmu.slnx/v18
+/CFEmu/.vs/CFEmu.slnx/DesignTimeBuild

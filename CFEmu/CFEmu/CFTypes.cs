@@ -38,20 +38,19 @@
 
         public enum AddressingMode
         {
-            DataRegisterDirect,
-            AddressRegisterDirect,
-            AddressRegisterIndirect,
-            AddressRegisterIndirectWithPostIncrement,
-            AddressRegisterIndirectWithPreDecrement,
-            AddressRegisterIndirectWithDisplacement,
-            AddressRegisterIndirectWithScaledIndexAnd8bitDisplacement,
-            ProgramCounterIndirectWithDisplacement,
-            ProgramCounterIndirectWithScaledIndexAnd8bitDisplacement,
-            AbsoluteShortData,
-            AbsoluteLongData,
-            ImmediateData,
-            Reserved,
-            Unknown
+            DataRegisterDirect,                                             //0b000
+            AddressRegisterDirect,                                          //0b001
+            AddressRegisterIndirect,                                        //0b010
+            AddressRegisterIndirectWithPostIncrement,                       //0b011
+            AddressRegisterIndirectWithPreDecrement,                        //0b100
+            AddressRegisterIndirectWithDisplacement,                        //0b101
+            AddressRegisterIndirectWithScaledIndexAnd8bitDisplacement,      //0b110
+            ProgramCounterIndirectWithDisplacement,                         //0b111
+            ProgramCounterIndirectWithScaledIndexAnd8bitDisplacement,       //0b111
+            AbsoluteShortData,                                              //0b111
+            AbsoluteLongData,                                               //0b111
+            ImmediateData,                                                  //0b111
+            Unknown                                                         //0b1111
         }
     }
 }

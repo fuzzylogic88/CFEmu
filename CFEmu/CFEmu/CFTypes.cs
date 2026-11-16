@@ -17,22 +17,22 @@
             /// </summary>
             Long
         }
-        public enum BranchConditions
+        public enum BranchConditions : ushort
         {
-            CarryClear,
-            CarrySet,
-            Equal,
-            GreaterOrEqual,
-            GreaterThan,
-            High,
-            LessOrEqual,
-            LowerOrSame,
-            LessThan,
-            Minus,
-            NotEqual,
-            Plus,
-            OverflowClear,
-            OverflowSet,
+            CarryClear = 0b0100,
+            CarrySet = 0b0101,
+            Equal = 0b111,
+            GreaterOrEqual = 0b1100,
+            GreaterThan = 0b1110,
+            High = 0b0010,
+            LessOrEqual = 0b1111,
+            LowerOrSame = 0b0011,
+            LessThan = 0b1101,
+            Minus = 0b1011,
+            NotEqual = 0b0110,
+            Plus = 0b1010,
+            OverflowClear = 0b1000,
+            OverflowSet = 0b1001,
             Unknown
         }
 

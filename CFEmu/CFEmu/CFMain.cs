@@ -198,7 +198,7 @@ namespace CFEmu
                     ushort extA = (ushort)((ds.prog_rom[ds.PC + 2] << 8) | ds.prog_rom[ds.PC + 3]);
                     ushort extB = (ushort)((ds.prog_rom[ds.PC + 4] << 8) | ds.prog_rom[ds.PC + 5]);
 
-                    if (ds.PC == 0x5d2)
+                    if (ds.PC == 0x5F8)
                     {
                         //ExportRAMContents(ds);
                         Console.WriteLine("!!! BREAK !!!");
@@ -221,6 +221,7 @@ namespace CFEmu
                                         BTST(ds, opc, extA, true);
                                         continue;
                                     }
+                                    else { throw new Exception("dynamic btst unimplemented!"); }
                                     break;
                             }
                             break;
@@ -240,6 +241,7 @@ namespace CFEmu
                             switch (inst)
                             {
                                 case 0x0084:
+                                case 0x0085: // clr_L
                                     CLR(ds, opc, extA, extB);
                                     continue;
                                 case 0x008D:
@@ -331,6 +333,7 @@ namespace CFEmu
                                 BranchConditions bc = BranchConditions.Unknown;
                                 bc = inst switch
                                 {
+                                    0x4 => BranchConditions.CarryClear,
                                     0x6 => BranchConditions.NotEqual,
                                     0x7 => BranchConditions.Equal,
                                     0xD => BranchConditions.LessThan,
@@ -389,7 +392,7 @@ namespace CFEmu
 
                         // Shift / Rotate / Bit field
                         case 0xE:
-                            SHIFT(ds, opc, extA, extB);
+                            LSHIFT(ds, opc, extA, extB);
                             break;
 
                         // Coprocessor interface / MC68040 and CPU32 extensions
@@ -447,9 +450,32 @@ namespace CFEmu
                 {
                     data = ds.D[src_reg];
                 }
-                if (src_am == AddressingMode.AddressRegisterDirect)
+                else if (src_am == AddressingMode.AddressRegisterDirect)
                 {
                     data = ds.A[src_reg];
+                }
+                else if (src_am == AddressingMode.AddressRegisterIndirectWithPostIncrement)
+                {
+                    data = ds.A[src_reg];
+                    switch (size)
+                    {
+                        case 0:
+                            if (src_reg == 7) //SP case, 2 decremented
+                            {
+                                ds.A[src_reg] += 2;
+                            }
+                            else
+                            {
+                                ds.A[src_reg] += 1;
+                            }
+                            break;
+                        case 1:
+                            ds.A[src_reg] += 2;
+                            break;
+                        case 2:
+                            ds.A[src_reg] += 4;
+                            break;
+                    }
                 }
             }
             else
@@ -507,7 +533,7 @@ namespace CFEmu
                     }
                     else
                     {
-                        MOVEL(ds, data, dst_reg, dst_am);
+                        MOVEL(ds, data, dst_reg, dst_am, size);
                     }
                     break;
                 case 3:
@@ -525,12 +551,54 @@ namespace CFEmu
             ds.PC += (uint)mv_pc_offset_bytes + 2;
         }
         
+        static void ASHIFT()
+        {
+
+        }
+
         /// <summary>
         /// Logical Shift (left/right)
         /// </summary>
-        static void SHIFT(DeviceState ds, ushort opc, uint extA, uint extB)
+        static void LSHIFT(DeviceState ds, ushort opc, uint extA, uint extB)
         {
+            ushort cnt_or_reg_dy = (ushort)((opc & 0xE00) >> 9);
+            ushort direction = (ushort)((opc & 0x0100) >> 8);
+            ushort imm_or_reg_shift_cnt = (ushort)((opc & 0x20) >> 5);
+            ushort reg_dx = (ushort)(opc & 0x7);
 
+            ushort shift_cnt = 0;
+            string shift_dir = string.Empty;
+
+            bool N = false, Z = false, V = false, X = false, C = false;
+
+            // i/r field
+            switch (imm_or_reg_shift_cnt)
+            {
+                case 0: // immediate shift cnt (range 1-8)
+                    shift_cnt = cnt_or_reg_dy;
+                    break;
+                case 1: // register shift cnt (Dx)
+                    shift_cnt = (ushort)ds.D[reg_dx]; // contains shift cnt % 64
+                    break;
+            }
+
+            // direction 
+            switch (direction)
+            { 
+                case 0: // right shift
+                    shift_dir = "R";
+                    C = X = (ds.D[reg_dx] & shift_cnt) == 1;                 // set carry/extend if leftmost, right-traveling bit is 1
+                    ds.D[reg_dx] = ds.D[reg_dx] >> shift_cnt;
+                    break;
+                case 1: // left shift
+                    shift_dir = "L";
+                    C = X = ((ds.D[reg_dx] >> (31 - shift_cnt)) & 1) == 1;  // set carry/extend if rightmost, left-traveling bit is 1
+                    ds.D[reg_dx] = ds.D[reg_dx] << shift_cnt;
+                    break;
+            }
+            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tLS{shift_dir} D[{reg_dx}] {shift_cnt} steps -> 0x{ds.D[reg_dx]:X8}");
+            UpdateSREG(ds, negative: N, zero: Z, overflow: V, carry: C, extend: X);
+            ds.PC += 2;
         }
 
         static void SUB(DeviceState ds, ushort opc, uint extA, uint extB)
@@ -600,6 +668,14 @@ namespace CFEmu
             Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tSUBA_L\tA[{addr_reg}] - 0x{extWords:X8} -> 0x{ds.A[addr_reg]:X8}");
             ds.PC += (uint)(extCnt * 2 + 4);
         }
+
+        /// <summary>
+        /// Perform comparison and update condition codes (does not write back to mem/reg)
+        /// </summary>
+        /// <param name="ds"></param>
+        /// <param name="opc"></param>
+        /// <param name="extA"></param>
+        /// <exception cref="Exception"></exception>
         static void CMPA_L(DeviceState ds, ushort opc, uint extA)
         {
             ushort ea_mode = (ushort)((opc & 0x0038) >> 3);
@@ -609,8 +685,8 @@ namespace CFEmu
 
             (AddressingMode am, _, int extCnt) = GetAddrModeAndExtWordCount(ea_mode, ea_reg, 0, extA, 0);
 
-            bool N, Z, V, C;
-            uint res;
+            bool N = false, Z = false, V = false, C = false;
+            uint res = 0;
 
             switch (am)
             {
@@ -619,25 +695,39 @@ namespace CFEmu
                     {
                         case 7: // <ea>y CMP Dx -> Dx, Data Register used as dest
                             res = ds.A[addr_reg] - ds.D[ea_reg];
-                            uint dest_sign_bit = ds.A[addr_reg] & 0x1000_0000;
+                            uint dest_sign_bit = ds.A[addr_reg] & 0x8000_0000;
+
+                            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tCMPA_L A[{addr_reg}] - D[{ea_reg}]");
 
                             N = (int)(res & 0xFFFFFFFF) < 0;
                             Z = (int)(res & 0xFFFFFFFF) == 0;
                             V = ((ds.A[addr_reg] ^ ds.D[ea_reg]) & (ds.A[addr_reg] ^ res) & dest_sign_bit) != 0;
                             C = ds.A[addr_reg] < ds.D[ea_reg];
-
-                            ds.A[addr_reg] = res;
                             break;
                         default:
                             throw new Exception("Unimplemented opmode encountered in CMPA_L");
                     }
+                    break;
+                case AddressingMode.AddressRegisterDirect:
+                    switch (opmode)
+                    {
+                        case 7:
+                            res = ds.A[addr_reg] - ds.A[ea_reg];
+                            uint dest_sign_bit = ds.A[addr_reg] & 0x8000_0000;
 
+                            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tCMPA_L A[{addr_reg}] - A[{ea_reg}]");
+
+                            N = (int)(res & 0xFFFFFFFF) < 0;
+                            Z = (int)(res & 0xFFFFFFFF) == 0;
+                            V = ((ds.A[addr_reg] ^ ds.A[ea_reg]) & (ds.A[addr_reg] ^ res) & dest_sign_bit) != 0;
+                            C = ds.A[addr_reg] < ds.A[ea_reg];
+                            break;
+                    }
                     break;
                 default:
                     throw new Exception("Unimplemented am ADD_L");
             }
             UpdateSREG(ds, negative: N, zero: Z, overflow: V, carry: C);
-            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tCMPA_L\tA[{addr_reg}] - 0x{ds.D[ea_reg]:X8} -> 0x{res:X8}");
             ds.PC += (uint)(extCnt * 2 + 2);
         }
 
@@ -783,7 +873,7 @@ namespace CFEmu
                 };
 
                 bool bit_set = ((data >> bit_num) & 1) == 1;
-                Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tBTST\tbit: 0x{bit_num:X8}, data: 0x{data:X8}] -> {(bit_set ? "set" : "clear")}");
+                Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tBTST\tbit: 0x{bit_num:X8}, data: 0x{data:X8} -> {(bit_set ? "set" : "clear")}");
                 UpdateSREG(ds, zero: !bit_set);
                 ds.PC += 4;
             }
@@ -810,26 +900,31 @@ namespace CFEmu
 
             (AddressingMode am, uint extWords, int extCnt) = GetAddrModeAndExtWordCount(mode, reg, size, extA, extB);
 
-            if (extCnt == 0)
-            {
-                throw new Exception("CLR no ext not implemented");
-            }
-
             string sizeType;
+
+            ushort decBytes;
+            Size opSize;
+
             switch (size)
             {
                 // byte
                 case 0:
+                    opSize = Size.Byte;
+                    decBytes = 1;
                     clrMsk = 0xFF;
                     sizeType = "B";
                     break;
                 // word
                 case 1:
+                    opSize = Size.Word;
+                    decBytes = 2;
                     clrMsk = 0xFFFF;
                     sizeType = "W";
                     break;
                 // long
                 case 2:
+                    opSize = Size.Long;
+                    decBytes = 4;
                     clrMsk = 0xFFFFFFFF;
                     sizeType = "L";
                     break;
@@ -840,6 +935,14 @@ namespace CFEmu
             // clear 
             switch (am)
             {
+                case AddressingMode.AddressRegisterIndirectWithPreDecrement:
+                    ds.A[reg] -= decBytes;
+                    dataPost = ds.RamRead(ds.A[reg], opSize) & ~clrMsk;
+                    ds.RamWrite(ds.A[reg], dataPost, opSize);
+
+                    Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tCLR_{sizeType} RAM[0x{ds.A[reg]:X8}] -> 0x{dataPost:X8}");
+                    break;
+
                 case AddressingMode.AbsoluteLongData:
                     dataPost = ds.RamRead(extWords, Size.Long) & ~clrMsk;
                     ds.RamWrite(extWords, dataPost, Size.Long);
@@ -861,18 +964,67 @@ namespace CFEmu
             uint dst_reg = (uint)((opc & 0xE00) >> 9);      // bits 9-11
             uint src_addr_mode = (uint)((opc & 0x38) >> 3); // bits 3-5
             uint src_reg = (uint)(opc & 0x7);               // bits 0-2
+            uint ea = 0, disp = 0;
 
-            (AddressingMode am, uint disp, int extCnt) = GetAddrModeAndExtWordCount(src_addr_mode, src_reg, 0, extA, extB);
+            (AddressingMode am, uint extWords, int extCnt) = GetAddrModeAndExtWordCount(src_addr_mode, src_reg, 0, extA, extB);
 
             if (extCnt == 0)
             {
                 throw new Exception("no no-ext-word case implemented, LEA");
             }
+
             switch (am)
             {
                 case AddressingMode.AddressRegisterIndirectWithDisplacement:
-                    uint ea = ds.A[src_reg] + disp;
+                    disp = extWords;
+                    ea = ds.A[src_reg] + disp;
                     ds.A[dst_reg] = ea;
+                    break;
+                case AddressingMode.AddressRegisterIndirectWithScaledIndexAnd8bitDisplacement:
+
+                    /* 
+                     *  from extension word, derive:
+                     *  - index register (D0/ A0->A7)
+                     *  - index reg size (word/long)
+                     *  - scale factor
+                     *  - 8b displacement
+                     */
+
+                    uint reg_type = (ushort)((extWords & 0x8000) >> 15);
+                    uint idx_reg = (ushort)((extWords & 0x7000) >> 12);
+                    uint size = (ushort)((extWords & 0x800) >> 11);
+
+                    if (size == 0x0)
+                    {
+                        // anticipating a longword (section 2-2)
+                        throw new Exception("Address Error Exception");
+                    }
+
+                    uint scale = (ushort)((extWords & 0x600) >> 9);
+
+                    ushort calc_scale;
+                    calc_scale = scale switch
+                    {
+                        0b00 => 1,
+                        0b01 => 2,
+                        0b10 => 4,
+                        0b11 => 8,
+                        _ => throw new Exception("Unknown scale value encountered in LEA"),
+                    };
+
+                    disp = (ushort)(extWords & 0xFF);
+
+                    ushort scaled_val = 0;
+                    scaled_val = reg_type switch
+                    {
+                        0 => (ushort)(ds.D[idx_reg] * calc_scale),
+                        1 => (ushort)(ds.A[idx_reg] * calc_scale),
+                        _ => throw new Exception("Unknown reg_type encountered in LEA"),
+                    };
+
+                    ea = ds.A[src_reg] + scaled_val + disp;
+                    ds.A[dst_reg] = ea;
+
                     break;
                 default:
                     throw new Exception("Unimplemented am in LEA");
@@ -1176,18 +1328,29 @@ namespace CFEmu
             bool bCondMet;
             uint oldPc = ds.PC;
 
+            // read sreg bits
+            ushort Z = (ushort)((ds.sreg & 0x4) >> 2);
+            ushort N = (ushort)((ds.sreg & 0x8) >> 3);
+            ushort V = (ushort)((ds.sreg & 0x2) >> 1);
+            ushort C = (ushort)(ds.sreg & 0x1);
+
+            // bcc tests: section 4-13
             switch (bc)
             {
                 case BranchConditions.NotEqual:
-                    bCondMet = (ds.sreg & 0x4) != 0;
+                    bCondMet = Z != 0;
                     break;
                 case BranchConditions.Equal:
-                    bCondMet = (ds.sreg & 0x4) == 0;
+                    bCondMet = Z == 0;
                     break;
                 case BranchConditions.LessThan: // test : N & !V | !N & V
-                    ushort n = (ushort)(ds.sreg & 0x8);
-                    ushort v = (ushort)(ds.sreg & 0x2);
-                    bCondMet = n == 1 && v == 0 || n == 0 && v == 1;
+                    bCondMet = N == 1 && V == 0 || N == 0 && V == 1;
+                    break;
+                case BranchConditions.GreaterThan: // test :N & V & Z | N & V & Z
+                    bCondMet = (N == 1 && V == 1 && Z != 1) || (N != 1 && V != 1 && Z != 1);
+                    break;
+                case BranchConditions.CarryClear: // !C
+                    bCondMet = C == 0;
                     break;
                 default:
                     throw new Exception("Unimplemented branch condition in BCC");
@@ -1219,16 +1382,18 @@ namespace CFEmu
         // Branch Always (Unconditional)
         static void BRA(DeviceState ds, ushort opc, ushort extA, ushort extB)
         {
-            ushort disp = (ushort)(opc & 0xFF);
+            // signed displacement
+            int disp = (sbyte)(opc & 0xFF);
+
             if (disp == 0xFF)
             {
                 // longword displacement, 2x words after opcode word
-                disp = (ushort)(extA << 16 | extB);
+                disp = (short)(extA << 16 | extB);
             }
             else if (disp == 0x00)
             {
                 // word immediately after the opcode is displacement
-                disp = extA;
+                disp = (short)extA;
             }
             else
             {
@@ -1236,7 +1401,7 @@ namespace CFEmu
             }
 
             uint oldPc = ds.PC;
-            ds.PC = ds.PC + disp + 2; // page 4-55
+            ds.PC = (uint)(ds.PC + disp + 2); // page 4-55
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"└─────BRA: 0x{oldPc:X8} -> 0x{ds.PC:X8}");
             Console.ForegroundColor = ConsoleColor.White;
@@ -1443,7 +1608,7 @@ namespace CFEmu
         /// <param name="ds"></param>
         /// <param name="data"></param>
         /// <param name="dst_reg"></param>
-        static void MOVEL(DeviceState ds, uint data, uint dst_reg, AddressingMode dst_am)
+        static void MOVEL(DeviceState ds, uint data, uint dst_reg, AddressingMode dst_am, uint size)
         {
             if (dst_am == AddressingMode.DataRegisterDirect)
             {
@@ -1461,6 +1626,30 @@ namespace CFEmu
                 // the value at the address is copied onto the predecremented stack location in A[7]
                 ds.RamWrite(ds.A[dst_reg], data, Size.Long);/*ds.RamRead(data, Size.Long), Size.Long);*/
                 Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tMOVEL RAM[0x{data:X8}] to RAM[0x{ds.A[7]:X8}]");
+            }
+            else if (dst_am == AddressingMode.AddressRegisterIndirectWithPostIncrement)
+            {
+                ds.RamWrite(ds.A[dst_reg], data, Size.Long);/*ds.RamRead(data, Size.Long), Size.Long);*/
+                Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tMOVEL RAM[0x{data:X8}] to RAM[0x{ds.A[7]:X8}]");
+                switch (size)
+                {
+                    case 0:
+                        if (dst_reg == 7) //SP case, 2 decremented
+                        {
+                            ds.A[dst_reg] += 2;
+                        }
+                        else
+                        {
+                            ds.A[dst_reg] += 1;
+                        }
+                        break;
+                    case 1:
+                        ds.A[dst_reg] += 2;
+                        break;
+                    case 2:
+                        ds.A[dst_reg] += 4;
+                        break;
+                }
             }
             else
             {

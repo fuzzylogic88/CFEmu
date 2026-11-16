@@ -198,7 +198,7 @@ namespace CFEmu
                     ushort extA = (ushort)((ds.prog_rom[ds.PC + 2] << 8) | ds.prog_rom[ds.PC + 3]);
                     ushort extB = (ushort)((ds.prog_rom[ds.PC + 4] << 8) | ds.prog_rom[ds.PC + 5]);
 
-                    if (ds.PC == 0x5F8)
+                    if (ds.PC == 0x72A)
                     {
                         //ExportRAMContents(ds);
                         Console.WriteLine("!!! BREAK !!!");
@@ -216,13 +216,14 @@ namespace CFEmu
                             switch (_test)
                             {
                                 case 0x0: // BTST
-                                    if (_static == 1)
+                                    switch (_static) 
                                     {
-                                        BTST(ds, opc, extA, true);
-                                        continue;
+                                        case 1:
+                                            BTST(ds, opc, extA, true);
+                                            continue;
+                                        default:
+                                            throw new Exception("dynamic btst unimplemented!");
                                     }
-                                    else { throw new Exception("dynamic btst unimplemented!"); }
-                                    break;
                             }
                             break;
 
@@ -282,10 +283,20 @@ namespace CFEmu
                                     MOVEM_L(ds, opc, extA, extB);
                                     continue;
                                 case 0x0094:
-                                    TST(ds, opc, extA, extB);
-                                    continue;
                                 case 0x0095:
-                                    HALT(ds);
+                                    uint instc = (ushort)(opc & 0xFF);
+                                    switch (instc)
+                                    {
+                                        case 0x79: // tst.b
+                                        case 0x8d: // tst.l
+                                            TST(ds, opc, extA, extB);
+                                            break;
+                                        case 0xC8:
+                                            HALT(ds);
+                                            break;
+                                        default:
+                                            throw new Exception("Unimplemented instruction");
+                                    }
                                     continue;
                                 case 0x009D:
                                     JSR(ds, opc, extA, extB);
@@ -306,10 +317,11 @@ namespace CFEmu
                             {
                                 case 1:
                                     // SUBQ
-                                    SUBQ(ds, opc);
+                                    QUICK_MATH(ds, opc, QMathOp.SUBRACT);
                                     continue;
-                                case 2:
+                                case 0:
                                     // ADDQ
+                                    QUICK_MATH(ds, opc, QMathOp.ADD);
                                     continue;
                             }
                             break;
@@ -345,7 +357,7 @@ namespace CFEmu
 
                         // moveq (quick, data register)
                         case 7:
-                            MOVEQ(ds, opc);
+                            QUICK_MOVE(ds, opc, QMoveOp.MOVEQ);
                             continue;
 
                         // OR / DIV / SBCD
@@ -725,7 +737,7 @@ namespace CFEmu
                     }
                     break;
                 default:
-                    throw new Exception("Unimplemented am ADD_L");
+                    throw new Exception("Unimplemented am CMPA_L");
             }
             UpdateSREG(ds, negative: N, zero: Z, overflow: V, carry: C);
             ds.PC += (uint)(extCnt * 2 + 2);
@@ -783,8 +795,11 @@ namespace CFEmu
                             ds.A[data_reg] += extWords;
                             Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tADD_L A[{data_reg}] + 0x{extWords:X8} -> 0x{ds.A[data_reg]:X8}");
                             break;
+                        case 2:
+                            ds.D[data_reg] += extWords;
+                            break;
                         default:
-                            throw new Exception("Unimplemented am in ADD_L");
+                            throw new Exception("Unimplemented OPMODE in ADD_L");
                     }
                     break;
                 default:
@@ -1105,8 +1120,10 @@ namespace CFEmu
             switch (am)
             {
                 case AddressingMode.AbsoluteShortData:
-                    ds.A[7] = SignExtend32(extWords);
+                    ds.RamWrite(ds.A[7], SignExtend32(extWords),Size.Long);
                     break;
+                default:
+                    throw new Exception("unimplemented am in PEA");
             }
             ds.PC += (uint)(2 * extCnt + 2);
             Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tPEA\treg:SP, ea:{SignExtend32(extWords)}");
@@ -1140,7 +1157,7 @@ namespace CFEmu
             int displacement = (short)extA;
 
             ds.A[7] -= 4;                                   // SP – 4 -> SP
-            ds.RamWrite(ds.A[7], ds.A[reg], Size.Long);     // Ay -> (SP)
+            ds.RamWrite(ds.A[7], ds.A[reg], Size.Long);     // Ay -> (SP) (addr as longword gets written)
             ds.A[reg] = ds.A[7];                            // SP -> Ay
             ds.A[7] = (uint)((int)ds.A[7] + displacement);  // SP + dn -> SP
 
@@ -1302,6 +1319,14 @@ namespace CFEmu
                         N = (int)(_val & 0xFFFF) < 0;
                         Z = (_val & 0xFFFF) == 0;
                         Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tTST.W RAM[0x{data:X8}] neg:{N}, zero:{Z}");
+                    }
+                    break;
+                case AddressingMode.AddressRegisterDirect:
+                    if (size == 0x02) // test word
+                    {
+                        N = (ds.A[ea_reg] & 0xFFFF) < 0;
+                        Z = (ds.A[ea_reg] & 0xFFFF) == 0;
+                        Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tTST.W A[{ea_reg}] neg:{N}, zero:{Z}");
                     }
                     break;
                 case AddressingMode.DataRegisterDirect:
@@ -1693,9 +1718,9 @@ namespace CFEmu
         /// </summary>
         /// <param name="ds"></param>
         /// <param name="opc"></param>
-        static void SUBQ(DeviceState ds, ushort opc)
+        static void QUICK_MATH(DeviceState ds, ushort opc, QMathOp qop)
         {
-            bool C, N, Z, V;
+            bool C = false, N = false, Z = false, V = false;
             uint negMsk = 0;    // negative mask for bit check
             uint wbMskA = 0;    // writeback mask for destination bit preservation  
                                 // this is inverted to know which bits to overwrite
@@ -1711,21 +1736,27 @@ namespace CFEmu
             {
                 case AddressingMode.AddressRegisterDirect:
 
-                    C = ds.A[dst_reg] < data;
+                    switch (qop)
+                    {
+                        case QMathOp.SUBRACT:
+                            C = ds.A[dst_reg] < data;
 
-                    // signed subtraction overflow test - checks dest, source, and result sign bits
-                    uint result = ds.A[dst_reg] -= data;
-                    uint dest_sign_bit = ds.A[dst_reg] & 0xf;
-                    V = ((ds.A[dst_reg] ^ data) & (ds.A[dst_reg] ^ result) & dest_sign_bit) != 0;
+                            // signed subtraction overflow test - checks dest, source, and result sign bits
+                            uint result = ds.A[dst_reg] -= data;
+                            uint dest_sign_bit = ds.A[dst_reg] & 0xf;
+                            V = ((ds.A[dst_reg] ^ data) & (ds.A[dst_reg] ^ result) & dest_sign_bit) != 0;
 
-                    // no size check, alter all 32bits of dest A[reg]
-                    ds.A[dst_reg] = result;
+                            // no size check, alter all 32bits of dest A[reg]
+                            ds.A[dst_reg] = result;
 
-                    Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tSUBQ 0x{data:X8} from A[{dst_reg}] ({ds.A[dst_reg]:X8}) -> {result:X8}");
+                            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tSUBQ 0x{data:X8} from A[{dst_reg}] ({ds.A[dst_reg]:X8}) -> {result:X8}");
 
-                    N = (ds.A[dst_reg] & 0x8000) == 1;
-                    Z = ds.A[dst_reg] == 0;
-                    UpdateSREG(ds, negative: N, zero: Z, overflow: V, carry: C);
+                            N = (ds.A[dst_reg] & 0x8000) == 1;
+                            Z = ds.A[dst_reg] == 0;
+                            break;
+                        case QMathOp.ADD:
+                            break;
+                    }
                     break;
                 case AddressingMode.DataRegisterDirect:
                     uint dest = 0;
@@ -1751,43 +1782,60 @@ namespace CFEmu
                             break;
                     }
 
-                    Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tSUBQ 0x{data:X8} from D[{dst_reg}] ({ds.D[dst_reg]:X8}) -> {dest - data:X8}");
+                    switch (qop)
+                    {
+                        case QMathOp.SUBRACT:
 
-                    C = dest - data < 0;
-                    dest -= data;
+                            C = dest - data < 0;
+                            dest -= data;
 
-                    // Overflow occurs when src/dest have different sign bits before, or AFTER subtraciton
-                    V = ((ds.D[dst_reg] ^ data) &
-                                (ds.D[dst_reg] ^ dest) & negMsk) != 0;
+                            // Overflow occurs when src/dest have different sign bits before, or AFTER subtraciton
+                            V = ((ds.D[dst_reg] ^ data) &
+                                        (ds.D[dst_reg] ^ dest) & negMsk) != 0;
 
-                    // preserve bits and overwrite !wbMskA
-                    ds.D[dst_reg] = (ds.D[dst_reg] & wbMskA) | (dest & ~wbMskA);
+                            // preserve bits and overwrite !wbMskA
+                            ds.D[dst_reg] = (ds.D[dst_reg] & wbMskA) | (dest & ~wbMskA);
 
-                    N = (dest & negMsk) == 1;
-                    Z = dest == 0;
+                            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tSUBQ 0x{data:X8} from D[{dst_reg}] ({ds.D[dst_reg]:X8}) -> {dest - data:X8}");
 
-                    UpdateSREG(ds, negative: N, zero: Z, overflow: V, carry: C);
+                            N = (dest & negMsk) == 1;
+                            Z = dest == 0;
+
+                            break;
+                        case QMathOp.ADD:
+                            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tADDQ 0x{data:X8} to D[{dst_reg}] ({ds.D[dst_reg]:X8}) -> {dest + data:X8}");
+
+                            break;
+                    }
                     break;
             }
+            UpdateSREG(ds, negative: N, zero: Z, overflow: V, carry: C);
             ds.PC += 2;
         }
 
         // immediate to data register D[n]
-        static void MOVEQ(DeviceState ds, ushort opc)
+        static void QUICK_MOVE(DeviceState ds, ushort opc, QMoveOp qop)
         {
-            bool negative, zero;
+            bool negative = false, zero = false;
 
-            uint dst_reg = (uint)((opc & 0xE00) >> 9);  // bits 9-11
-            uint data = (uint)(opc & 0xFF);             // bits 0-7 
+            switch (qop)
+            {
+                case QMoveOp.MOVEQ:
+                    uint dst_reg = (uint)((opc & 0xE00) >> 9);  // bits 9-11
+                    uint data = (uint)(opc & 0xFF);             // bits 0-7 
 
-            ds.D[dst_reg] = data;
-            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tMOVEQ 0x{data:X8} to D[{dst_reg}]");
+                    ds.D[dst_reg] = data;
+                    Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tMOVEQ 0x{data:X8} to D[{dst_reg}]");
 
-            // result < 0?
-            negative = (data & 0x8000_0000) != 0;
+                    // result < 0?
+                    negative = (data & 0x8000_0000) != 0;
 
-            // result is zero? set zero flag
-            zero = data == 0;
+                    // result is zero? set zero flag
+                    zero = data == 0;
+                    break;
+                default:
+                    throw new Exception("qmove3 unimplemented!");
+            }
 
             // clear V and C flags always
             UpdateSREG(ds, negative: negative, zero: zero, overflow: false, carry: false);

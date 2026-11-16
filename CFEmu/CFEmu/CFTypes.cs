@@ -2,21 +2,36 @@
 {
     public static class CFTypes
     {
+        public enum QMathOp
+        {
+            ADD,        // addq
+            SUBRACT,    // subq
+        }
+
+        public enum QMoveOp
+        {
+            MOVEQ,      // move quick
+            MOVE3Q      // move 3-bit data quick
+        }
+
         public enum Size
         {
             /// <summary>
             /// 8-bit value
             /// </summary>
-            Byte,   
+            Byte,
+            
             /// <summary>
             /// 16-bit value
             /// </summary>
             Word,
+
             /// <summary>
             /// 32-bit value
             /// </summary>
             Long
         }
+
         public enum BranchConditions : ushort
         {
             CarryClear = 0b0100,

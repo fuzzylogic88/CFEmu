@@ -198,7 +198,7 @@ namespace CFEmu
                     ushort extA = (ushort)((ds.prog_rom[ds.PC + 2] << 8) | ds.prog_rom[ds.PC + 3]);
                     ushort extB = (ushort)((ds.prog_rom[ds.PC + 4] << 8) | ds.prog_rom[ds.PC + 5]);
 
-                    if (ds.PC == 0x72A)
+                    if (ds.PC == 0x1204)
                     {
                         //ExportRAMContents(ds);
                         Console.WriteLine("!!! BREAK !!!");
@@ -221,9 +221,11 @@ namespace CFEmu
                                         case 1:
                                             BTST(ds, opc, extA, true);
                                             continue;
-                                        default:
-                                            throw new Exception("dynamic btst unimplemented!");
+                                        case 0:
+                                            BTST(ds, opc, extA, false);
+                                            continue;
                                     }
+                                    break;
                             }
                             break;
 
@@ -345,11 +347,21 @@ namespace CFEmu
                                 BranchConditions bc = BranchConditions.Unknown;
                                 bc = inst switch
                                 {
+                                    0x2 => BranchConditions.High,
+                                    0x3 => BranchConditions.LowerOrSame,
                                     0x4 => BranchConditions.CarryClear,
+                                    0x5 => BranchConditions.CarrySet,
                                     0x6 => BranchConditions.NotEqual,
                                     0x7 => BranchConditions.Equal,
+                                    0x8 => BranchConditions.OverflowClear,
+                                    0x9 => BranchConditions.OverflowSet,
                                     0xD => BranchConditions.LessThan,
-                                    _ => throw new Exception("unimplemented branch condition case"),
+                                    0xA => BranchConditions.Plus,
+                                    0xB => BranchConditions.Minus,
+                                    0xC => BranchConditions.GreaterOrEqual,
+                                    0xE => BranchConditions.GreaterThan,
+                                    0xF => BranchConditions.LessOrEqual,
+                                    _ => throw new Exception("Unexpected branch condition case encountered for BCC")
                                 };
                                 BCC(ds, bc, opc, extA);
                             }
@@ -418,7 +430,7 @@ namespace CFEmu
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Exception: {ex.Message}");
+                    Console.WriteLine($"Exception: {ex.Message} (PC: 0x{ds.PC:X8})");
                     Console.WriteLine("Press a key to exit.");
                     Console.ReadKey();
                     return;
@@ -536,7 +548,7 @@ namespace CFEmu
             switch (size)
             {
                 case 1:
-                    MOVEB(ds, data, dst_reg, dst_am, dst_addr);
+                    MOVEB(ds, data, dst_reg, dst_am, dst_addr, size);
                     break;
                 case 2:
                     if (dst_am == AddressingMode.AddressRegisterDirect)
@@ -695,7 +707,9 @@ namespace CFEmu
             ushort opmode = (ushort)((opc & 0x1C0) >> 6);
             ushort addr_reg = (ushort)((opc & 0xE00) >> 9);
 
-            (AddressingMode am, _, int extCnt) = GetAddrModeAndExtWordCount(ea_mode, ea_reg, 0, extA, 0);
+            uint lw_pc_offset = 0;
+
+            (AddressingMode am, uint extWords, int extCnt) = GetAddrModeAndExtWordCount(ea_mode, ea_reg, 0, extA, 0);
 
             bool N = false, Z = false, V = false, C = false;
             uint res = 0;
@@ -733,6 +747,25 @@ namespace CFEmu
                             Z = (int)(res & 0xFFFFFFFF) == 0;
                             V = ((ds.A[addr_reg] ^ ds.A[ea_reg]) & (ds.A[addr_reg] ^ res) & dest_sign_bit) != 0;
                             C = ds.A[addr_reg] < ds.A[ea_reg];
+
+                            break;
+                    }
+                    break;
+                case AddressingMode.ImmediateData:
+                    switch (opmode)
+                    {
+                        case 0x2:
+                            res = ds.D[addr_reg] - extWords;
+
+                            uint dest_sign_bit = ds.A[addr_reg] & 0x8000_0000;
+
+                            Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tCMPA_L A[{addr_reg}] - A[{ea_reg}]");
+
+                            N = (int)(res & 0xFFFFFFFF) < 0;
+                            Z = (int)(res & 0xFFFFFFFF) == 0;
+                            V = ((ds.D[addr_reg] ^ extWords) & (ds.D[addr_reg] ^ res) & dest_sign_bit) != 0;
+                            C = ds.D[addr_reg] < extWords;
+                            lw_pc_offset = 2;
                             break;
                     }
                     break;
@@ -740,7 +773,7 @@ namespace CFEmu
                     throw new Exception("Unimplemented am CMPA_L");
             }
             UpdateSREG(ds, negative: N, zero: Z, overflow: V, carry: C);
-            ds.PC += (uint)(extCnt * 2 + 2);
+            ds.PC += (uint)((extCnt * 2) + 2 + lw_pc_offset);
         }
 
         /// <summary>
@@ -874,13 +907,13 @@ namespace CFEmu
 
         static void BTST(DeviceState ds, ushort opc, ushort extA, bool is_static)
         {
+            ushort bit_num = extA;
+            ushort ea_mode = (ushort)((opc & 0x0038) >> 3);
+            ushort ea_reg = (ushort)(opc & 0x7);
+            (AddressingMode am, _, _) = GetAddrModeAndExtWordCount(ea_mode, ea_reg, 0, extA, 0);
+
             if (is_static)
             {
-                ushort bit_num = extA;
-                ushort ea_mode = (ushort)((opc & 0x0038) >> 3);
-                ushort ea_reg = (ushort)(opc & 0x7);
-                (AddressingMode am, _, _) = GetAddrModeAndExtWordCount(ea_mode, ea_reg, 0, extA, 0);
-                
                 var data = am switch
                 {
                     AddressingMode.DataRegisterDirect => ds.D[ea_reg],
@@ -894,7 +927,7 @@ namespace CFEmu
             }
             else
             {
-                throw new Exception("BTST dynamic not implemented");
+                throw new Exception("!");
             }
 
         }
@@ -1362,23 +1395,51 @@ namespace CFEmu
             // bcc tests: section 4-13
             switch (bc)
             {
-                case BranchConditions.NotEqual:
-                    bCondMet = Z != 0;
+                case BranchConditions.High:
+                    bCondMet = C != 1 && Z != 1;
                     break;
-                case BranchConditions.Equal:
-                    bCondMet = Z == 0;
-                    break;
-                case BranchConditions.LessThan: // test : N & !V | !N & V
-                    bCondMet = N == 1 && V == 0 || N == 0 && V == 1;
-                    break;
-                case BranchConditions.GreaterThan: // test :N & V & Z | N & V & Z
-                    bCondMet = (N == 1 && V == 1 && Z != 1) || (N != 1 && V != 1 && Z != 1);
+                case BranchConditions.LowerOrSame:
+                    bCondMet = C == 1 || Z == 1;
                     break;
                 case BranchConditions.CarryClear: // !C
-                    bCondMet = C == 0;
+                    bCondMet = C != 1;
+                    break;
+                case BranchConditions.CarrySet:
+                    bCondMet = C == 1;
+                    break;
+                case BranchConditions.NotEqual:
+                    bCondMet = Z != 1;
+                    break;
+                case BranchConditions.Equal:
+                    bCondMet = Z == 1;
+                    break;
+                case BranchConditions.OverflowClear:
+                    bCondMet = V != 1;
+                    break;
+                case BranchConditions.OverflowSet:
+                    bCondMet = V == 1;
+                    break;
+                case BranchConditions.LessThan: // test : N & !V | !N & V
+                    bCondMet = (N == 1 && V != 1) || (N != 1 && V == 1);
+                    break;
+                case BranchConditions.Plus:
+                    bCondMet = N != 1;
+                    break;
+                case BranchConditions.Minus:
+                    bCondMet = N == 1;
+                    break;
+                case BranchConditions.GreaterOrEqual:
+                    bCondMet = (N == 1 && V == 1 ) || (N != 1 && V != 1);
+                    break;
+                case BranchConditions.GreaterThan: // test :N & V & !Z | !N & !V & !Z
+                    bCondMet = (N == 1 && V == 1 && Z != 1) || (N != 1 && V != 1 && Z != 1);
+                    break;
+                case BranchConditions.LessOrEqual:
+                    bCondMet = Z == 1 || (N == 1 && V != 1) || (N != 1 && V == 1);
                     break;
                 default:
-                    throw new Exception("Unimplemented branch condition in BCC");
+                    throw new Exception("Unexpected branch condition in BCC");
+
             }
 
             if (bCondMet)
@@ -1582,7 +1643,7 @@ namespace CFEmu
         /// <param name="ds"></param>
         /// <param name="data"></param>
         /// <param name="dst_reg"></param>
-        static void MOVEB(DeviceState ds, uint data, uint dst_reg, AddressingMode dst_am, uint dst_addr)
+        static void MOVEB(DeviceState ds, uint data, uint dst_reg, AddressingMode dst_am, uint dst_addr, uint size)
         {
             if (dst_am == AddressingMode.AbsoluteLongData)
             {
@@ -1594,6 +1655,35 @@ namespace CFEmu
                 // preserve upper 24bits and write lower 8 bits
                 ds.D[dst_reg] = (ds.D[dst_reg] & 0xFFFFFF00) | (data & 0xFF);
                 Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tMOVEB 0x{(data & 0xFF):X8} to D[{dst_addr}]");
+            }
+
+
+            else if (dst_am == AddressingMode.AddressRegisterIndirectWithPostIncrement)
+            {
+                ds.RamWrite(ds.A[dst_reg], data, Size.Byte);
+
+                switch (size)
+                {
+                    case 0:
+                        if (dst_reg == 7) //SP case, 2 decremented
+                        {
+                            ds.A[dst_reg] += 2;
+                        }
+                        else
+                        {
+                            ds.A[dst_reg] += 1;
+                        }
+                        break;
+                    case 1:
+                        ds.A[dst_reg] += 2;
+                        break;
+                    case 2:
+                        ds.A[dst_reg] += 4;
+                        break;
+
+                }
+
+
             }
             else
             {
@@ -1730,7 +1820,7 @@ namespace CFEmu
             uint dst_addr_mode = (uint)((opc & 38) >> 3);
             uint dst_reg = (uint)(opc & 0x7);
 
-            (AddressingMode dst_am, _, _) = GetAddrModeAndExtWordCount(dst_addr_mode, dst_reg, size, 0, 0);
+            (AddressingMode dst_am, uint extWords, int extCnt) = GetAddrModeAndExtWordCount(dst_addr_mode, dst_reg, size, 0, 0);
 
             switch (dst_am)
             {
@@ -1760,6 +1850,7 @@ namespace CFEmu
                     break;
                 case AddressingMode.DataRegisterDirect:
                     uint dest = 0;
+                    ushort sz_shift = 0;
                     switch (size)
                     {
                         case 0:
@@ -1767,18 +1858,21 @@ namespace CFEmu
                             dest = ds.D[dst_reg] & 0xFF;
                             negMsk = 0x80;
                             wbMskA = 0xFFFFFF00;
+                            sz_shift = 7;
                             break;
                         // word
                         case 1:
                             dest = ds.D[dst_reg] & 0xFFFF;
                             negMsk = 0x8000;
                             wbMskA = 0xFFFF0000;
+                            sz_shift = 15;
                             break;
                         //longword
                         case 2:
                             dest = ds.D[dst_reg] & 0xFFFF_FFFF;
                             negMsk = 0x8000_0000;
                             wbMskA = 0; // entire destination overwritten
+                            sz_shift = 31;
                             break;
                     }
 
@@ -1798,12 +1892,15 @@ namespace CFEmu
 
                             Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tSUBQ 0x{data:X8} from D[{dst_reg}] ({ds.D[dst_reg]:X8}) -> {dest - data:X8}");
 
-                            N = (dest & negMsk) == 1;
+                            N = ((dest & negMsk) >> sz_shift)  == 1;
                             Z = dest == 0;
 
                             break;
                         case QMathOp.ADD:
+                            ds.D[dst_reg] += (extWords & wbMskA) | (dest & ~wbMskA); //pc 72a addq.l to SP falls through to DA reg case
+
                             Console.WriteLine($"PC: 0x{ds.PC:X8}\t|\tADDQ 0x{data:X8} to D[{dst_reg}] ({ds.D[dst_reg]:X8}) -> {dest + data:X8}");
+                            throw new Exception("addq unfinished");
 
                             break;
                     }

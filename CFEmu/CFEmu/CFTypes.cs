@@ -36,7 +36,7 @@
         {
             CarryClear = 0b0100,
             CarrySet = 0b0101,
-            Equal = 0b111,
+            Equal = 0b0111,
             GreaterOrEqual = 0b1100,
             GreaterThan = 0b1110,
             High = 0b0010,

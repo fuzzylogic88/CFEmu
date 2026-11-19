@@ -110,6 +110,8 @@ namespace CFEmu
 
                 PC = 0x400;
 
+                ApplyInitialPeriphState(this);
+
                 // prefetch three words? // 
                 Console.WriteLine("CPU reset.");
             }
@@ -163,6 +165,11 @@ namespace CFEmu
                 clockTick.WaitOne();
                 clockTick.Reset();
             }
+        }
+
+        static void ApplyInitialPeriphState(DeviceState ds)
+        {
+            ds.RamWrite(0x01fffb06, (uint)(0x6 << 0x7), Size.Byte); // PC 0x0A84
         }
 
         static void Main(string[] args)
@@ -286,15 +293,21 @@ namespace CFEmu
                                     continue;
                                 case 0x0094:
                                 case 0x0095:
-                                    uint instc = (ushort)(opc & 0xFF);
+
+                                    // check for halt outright
+                                    if (opc == 0x4AC8)
+                                    {
+                                        HALT(ds);
+                                        continue;
+                                    }
+
+                                    uint instc = (ushort)((opc & 0xFFC0) >> 6);
                                     switch (instc)
                                     {
-                                        case 0x79: // tst.b
-                                        case 0x8d: // tst.l
+                                        case 0x128: // tst.b
+                                        case 0x129: // tst.w
+                                        case 0x12B: // tst.l
                                             TST(ds, opc, extA, extB);
-                                            break;
-                                        case 0xC8:
-                                            HALT(ds);
                                             break;
                                         default:
                                             throw new Exception("Unimplemented instruction");
@@ -1451,6 +1464,7 @@ namespace CFEmu
                     // no displacement provided, get 16bit displacement extension word
                     disp = (short)extA;
                 }
+
                 ds.PC = (uint)((int)ds.PC + disp + 2);
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"└─────BCC:{bc}: 0x{oldPc:X8} -> 0x{ds.PC:X8}");

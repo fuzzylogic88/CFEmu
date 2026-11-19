@@ -1,5 +1,4 @@
 *.bin
 /.vs
-/CFEmu/CFEmu/bin
-/CFEmu/CFEmu/obj
-/CFEmu/.vs
+/CFEmu/bin
+/CFEmu/obj
